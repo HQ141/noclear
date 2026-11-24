@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Client documents and generated results: never commit these
+*.pdf
+*.xlsx
+*.xls
+*.csv
+output/
+temp/
+excel/
+
+# Local secrets / editor settings
+.env
+.claude/settings.local.json

@@ -1,0 +1,67 @@
+# AMD GPUs (ROCm). vLLM runs PaddleOCR-VL on the GPU; noclear runs in its own Python 3.13 env.
+#   docker build -f Dockerfile.rocm -t noclear:rocm .
+#   docker run --rm --device=/dev/kfd --device=/dev/dri --group-add video \
+#     -v "$PWD":/data -v ~/.cache/huggingface:/root/.cache/huggingface -v ~/.paddlex:/root/.paddlex \
+#     noclear:rocm
+# Web interface: add -p 127.0.0.1:8000:8000 and put "web" after the image name, then open http://localhost:8000
+#
+# apt fails inside rocm/vllm, so everything noclear needs is built in a plain Ubuntu image of the
+# same release (noble) and copied into rocm/vllm; the final stage runs no apt at all.
+ARG BASE_IMAGE=rocm/vllm:latest
+
+# ---------- builder ----------
+FROM ubuntu:24.04 AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libglib2.0-0t64 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.13.8 /uv /uvx /bin/
+
+# Same paths as in the final image: the venv refers to its Python by absolute path.
+ENV UV_PYTHON_PREFERENCE=only-managed \
+    UV_PYTHON_INSTALL_DIR=/opt/uv-python \
+    UV_PROJECT_ENVIRONMENT=/opt/noclear/.venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+WORKDIR /opt/noclear
+COPY pyproject.toml uv.lock .python-version ./
+# The cache mount keeps downloaded packages between builds (not stored in the image).
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-install-project
+COPY README.md ./
+COPY src ./src
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev
+
+# Copy every system library the venv's native modules link against (libGL, glib, libgomp, ...)
+# into /opt/noclear/lib. glibc itself is left out; the final image provides the same version.
+RUN mkdir -p /opt/noclear/lib \
+    && find /opt/noclear/.venv /opt/uv-python -type f -name '*.so*' -print0 \
+        | xargs -0 ldd 2>/dev/null \
+        | awk '$2 == "=>" && $3 ~ /^\/(usr\/)?lib\// {print $3}' \
+        | sort -u \
+        | grep -vE '/(libc|libm|libdl|libpthread|librt|libresolv|libutil|ld-linux[^/]*)\.so' \
+        | xargs -r cp -L -t /opt/noclear/lib/ \
+    && ls /opt/noclear/lib
+
+# ---------- final ----------
+FROM ${BASE_IMAGE}
+
+COPY --from=builder /opt/uv-python /opt/uv-python
+COPY --from=builder /opt/noclear /opt/noclear
+
+COPY docker/entrypoint.sh /usr/local/bin/noclear-entrypoint
+RUN chmod +x /usr/local/bin/noclear-entrypoint
+
+# Memory-efficient attention on RDNA; without it the vision encoder tries to allocate ~12 GiB at startup.
+ENV TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
+    FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    VLLM_EXTRA_ARGS="--gpu-memory-utilization 0.5--max-model-len 16384 --max-num-batched-tokens 16384" \
+    NOCLEAR_DEVICE=gpu \
+    NOCLEAR_VL_SERVER_URL=http://127.0.0.1:8118/v1 \
+    NOCLEAR_OUTPUT_DIR=/data/output
+
+WORKDIR /data
+EXPOSE 8000
+ENTRYPOINT ["noclear-entrypoint"]

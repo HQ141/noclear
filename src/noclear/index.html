@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>noclear</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --text: #1c2026;
+    --muted: #5f6b7a;
+    --border: #dde2e8;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --ok: #15803d;
+    --err: #b91c1c;
+    --track: #e7ebf0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418;
+      --surface: #1a1f25;
+      --text: #e6e9ed;
+      --muted: #97a3b1;
+      --border: #2c333c;
+      --accent: #5b8def;
+      --accent-text: #0b0f14;
+      --ok: #4ade80;
+      --err: #f87171;
+      --track: #262c34;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+
+  .drop {
+    display: block;
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    padding: 36px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); }
+  .drop strong { color: var(--accent); }
+  .drop input { display: none; }
+  .drop .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+  .jobs { display: grid; gap: 12px; margin-top: 24px; }
+  .job {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .job-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .job-name { font-weight: 600; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .status { font-size: 13px; color: var(--muted); }
+  .status.done { color: var(--ok); }
+  .status.error { color: var(--err); }
+  .bar { height: 6px; background: var(--track); border-radius: 3px; margin-top: 12px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .bar.indeterminate > div { width: 30%; animation: slide 1.2s ease-in-out infinite; }
+  @keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+
+  .btn {
+    border: 0;
+    border-radius: 8px;
+    padding: 7px 14px;
+    background: var(--accent);
+    color: var(--accent-text);
+    font: inherit;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .error-msg { color: var(--err); margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  .table-wrap { margin-top: 14px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; max-height: 480px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--surface); font-weight: 600; }
+  th:nth-child(2), td:nth-child(2) { text-align: left; }
+  tr.page-start td { border-top: 2px solid var(--border); }
+  .summary { color: var(--muted); font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>noclear</h1>
+  <p class="sub">Extract calibration tables from scanned Ideal Scales forms into CSV.</p>
+
+  <label class="drop" id="drop">
+    <input type="file" id="file" accept="application/pdf,.pdf" multiple>
+    <div><strong>Choose PDFs</strong> or drop them here</div>
+    <div class="hint">Each PDF is processed in turn; you can add more while one is running.</div>
+  </label>
+
+  <div class="jobs" id="jobs"></div>
+</main>
+
+<script>
+const jobsEl = document.getElementById('jobs');
+const drop = document.getElementById('drop');
+const input = document.getElementById('file');
+
+function el(tag, props = {}, children = []) {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of children) node.append(child);
+  return node;
+}
+
+function renderJob(card, job) {
+  const status = card.querySelector('.status');
+  const bar = card.querySelector('.bar');
+  const fill = bar.firstElementChild;
+  const actions = card.querySelector('.actions');
+  status.className = 'status ' + job.status;
+
+  if (job.status === 'queued') {
+    status.textContent = 'Queued';
+    bar.classList.add('indeterminate');
+  } else if (job.status === 'running') {
+    if (job.page_count) {
+      status.textContent = `Page ${job.page} of ${job.page_count} done`;
+      bar.classList.remove('indeterminate');
+      fill.style.width = `${(job.page / job.page_count) * 100}%`;
+    } else {
+      status.textContent = job.page ? `Page ${job.page} done` : 'Reading first page…';
+      bar.classList.add('indeterminate');
+    }
+  } else if (job.status === 'error') {
+    status.textContent = 'Failed';
+    bar.remove();
+    card.append(el('p', { className: 'error-msg', textContent: job.error || 'Unknown error' }));
+  } else if (job.status === 'done') {
+    const pages = new Set(job.rows.map(r => r[0])).size;
+    status.textContent = 'Done';
+    bar.remove();
+    actions.append(el('a', {
+      className: 'btn',
+      href: `/api/jobs/${job.id}/csv`,
+      textContent: 'Download CSV',
+    }));
+    card.append(el('div', {
+      className: 'summary',
+      textContent: `${job.rows.length} rows from ${pages} page${pages === 1 ? '' : 's'}. Check the numbers against the scan before using them.`,
+    }));
+    card.append(renderTable(job.header, job.rows));
+  }
+}
+
+function renderTable(header, rows) {
+  const thead = el('thead', {}, [el('tr', {}, header.map(h => el('th', { textContent: h })))]);
+  let lastPage = null;
+  const tbody = el('tbody', {}, rows.map(row => {
+    const tr = el('tr', {}, row.map(v => el('td', { textContent: v ?? '' })));
+    if (lastPage !== null && row[0] !== lastPage) tr.className = 'page-start';
+    lastPage = row[0];
+    return tr;
+  }));
+  return el('div', { className: 'table-wrap' }, [el('table', {}, [thead, tbody])]);
+}
+
+async function poll(card, id) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 1500));
+    let job;
+    try {
+      const res = await fetch(`/api/jobs/${id}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      job = await res.json();
+    } catch (e) {
+      continue; // server busy or briefly unreachable; try again
+    }
+    renderJob(card, job);
+    if (job.status === 'done' || job.status === 'error') return;
+  }
+}
+
+async function upload(file) {
+  const card = el('div', { className: 'job' }, [
+    el('div', { className: 'job-head' }, [
+      el('div', { className: 'job-name', textContent: file.name }),
+      el('span', { className: 'status', textContent: 'Uploading…' }),
+      el('div', { className: 'actions' }),
+    ]),
+    el('div', { className: 'bar indeterminate' }, [el('div')]),
+  ]);
+  jobsEl.prepend(card);
+
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const res = await fetch('/api/jobs', { method: 'POST', body: form });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+    renderJob(card, body);
+    poll(card, body.id);
+  } catch (e) {
+    renderJob(card, { status: 'error', error: `Upload failed: ${e.message}` });
+  }
+}
+
+function handleFiles(files) {
+  for (const file of files) upload(file);
+}
+
+input.addEventListener('change', () => { handleFiles(input.files); input.value = ''; });
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  handleFiles(e.dataTransfer.files);
+});
+</script>
+</body>
+</html>
